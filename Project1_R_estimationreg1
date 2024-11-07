@@ -1,0 +1,999 @@
+---
+title: "Estimation of elasticity of quantity to wage and non-wage amenities"
+output: html_notebook
+editor_options: 
+  markdown: 
+    wrap: sentence
+---
+
+```{r packages}
+rm(list=ls())
+
+library(tidyverse)
+library(fixest)
+library(broom)
+library(haven)
+library(skimr)
+# library(sandwich)
+# PSCL FOR ZERO INFLATED POISSON (hurdle function for two part models, zeroinfl for mixture models)
+# library(pscl)
+#MASS for negative binomial
+# library(MASS)
+```
+
+```{r}
+dat <- read_rds(here::here("data","built","demandes.rds"))
+```
+
+In this part, we seek to estimate which variables have an influence on the different outcomes of the hiring process.
+As a restaurant post a job offer, the offer and its characteristics are transmitted to a certain amount of job seekers who registered on the app.
+This number of notifications depends on an algorithm set by Extracadabra.
+The characteristics of this algorithm are not studied yet and we suppose this information as given\*.
+The notified job seekers choose to open (or not) the add and declare there are interested (or not).
+Doing this, they are considered as candidates.
+The number of candidates can be influenced by various variables : wage, schedule, type of establishment, location, amount of information given in the add...We estimate this relation in the first regression.
+Then, the restaurant collect the information about the candidates and choose (or not) to have an interview and to send them a message.
+It corresponds to the variable "nb_entretien".
+The choice to offer an interview may be driven by the qualifications of the candidates, their disponibility, the wage they ask for... At the end of the interview, the candidate gives a feedback and inform the restaurant if he stills want to get the job.
+Finally, the restaurant can accept or not this candidate ("nb_embauche").
+These last variables are highly influenced by characteristics of application annd matching quality.
+
+\*In the summary_stats part we can observe that the higher number of job postings corresponds to waiters and head of rank.
+When we look at the number of notifications, jobs posting for these qualifications have a mean transmission rate slightly higher than other jobs.
+Thus, one should investigate further on the possibility that there exists a positive correlation between the number of job offers and the number of notification for each add for this specific job.
+Also, the rest of the available data will allow us to see if this is driven by the number of potential candidates with this specific qualification.
+For example, there may be a lot of waiters and head of ranks which are registered on the plateform.
+If this is the case, there would be a positive relationship between number of candidates qualified for a job and the number of notification by job posting for this specific job.
+
+```{r}
+dat %>% glimpse
+```
+
+## 1. Estimate what influences nb_candidature
+
+We made some different regression and decide to keep the following ones :
+
+We keep these specifications as benchmark specifications.
+
+### a. The "classic" Poisson model
+
+```{r}
+#Benchmark wo. estab FE
+poiss_candidature_woFE <- dat %>% fepois(nb_candidature ~ log(nb_notified) + log(wage_h) + total_week_nonna + salary_type_lbl+ pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + presentation + length_presentation + mis_en_avant + job_name  + etab_code_postal + etab_category_nom + year_month + day_created + day_name + hour_created, data=.)
+#Benchmark w. estab FE
+poiss_candidature <- dat %>% fepois(nb_candidature ~ log(nb_notified) + log(wage_h) + salary_type_lbl + total_week_nonna + pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + length_presentation + mis_en_avant + job_name + year_month + day_created + day_name + hour_created| etablissement_id, data=.)
+
+list(poiss_candidature_woFE, poiss_candidature) %>% 
+  modelsummary::modelsummary()
+
+summary(poiss_candidature)
+```
+```{r}
+#Check for over/under dispersion
+E2 <- resid(poiss_candidature_woFE, type = "pearson")
+N  <- nrow(df)
+p  <- length(coef(poiss_candidature_woFE))   
+sum(E2^2) / (N - p)
+
+#Check for over/under dispersion
+E2 <- resid(poiss_candidature, type = "pearson")
+N  <- nrow(df)
+p  <- length(coef(poiss_candidature))   
+sum(E2^2) / (N - p)
+```
+This coefficient shows that we can make the specification fit better. We try to get closer to one.
+
+Trying to run goodness of fit estimate
+This page argues that it is better to compare models via Pearson reiduals (better than deviance and chi sqaure "https://stats.stackexchange.com/questions/79817/why-goodness-of-fit-via-deviance-and-chisq-is-poor-for-poisson-regression-glm")
+```{r}
+#1-pchisq(poiss_candidature$deviance, poiss_candidature$df.residual)  # GOF test
+```
+We can check if this overdispersion is due to the presence of zeros in the dependent variable :
+```{r}
+# Share of zeros of our dependent variable (1.96%)
+100*sum(df$nb_candidature == 0)/nrow(df)
+```
+As the share of zeros is not great, we run a negative binomial poisson model instead of zero inflated one.
+
+### b. The negative binomial model
+
+```{r}
+#Negative binomial with maximum likelihood estimator
+negbin_candidature_max_likelihood <- df %>% femlm(nb_candidature ~ log(nb_notified) + log(wage_h) + salary_type_lbl + total_week_nonna + pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + length_presentation + mis_en_avant + job_name + year_month + day_created + day_name + hour_created| etablissement_id , data =., family =("negbin"))
+
+summary(negbin_candidature_max_likelihood)
+
+#Check for over/under dispersion
+E2 <- resid(negbin_candidature_max_likelihood, type = "pearson")
+N  <- nrow(df)
+p  <- length(coef(negbin_candidature_max_likelihood))   
+sum(E2^2) / (N - p)
+```
+The negative binomial model does not handle multicollinearity, thus, we may correct it by hand:
+```{r}
+#After many tests, we can solve th multicollinearity issue between wage_h_na and salary_type_lbl.
+#For further specification, we only keep salary_type_lbl : the modality "unknown" returns the coefficient associated to : "the wage is not indicated".
+
+#collinearity(negbin_candidature_max_likelihood)
+```
+
+
+```{r}
+## The negative binomial with generalized linear model
+negbin_candidature <- df %>% fenegbin (nb_candidature ~ log(nb_notified) + log(wage_h) + salary_type_lbl + total_week_nonna + pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + length_presentation + mis_en_avant + job_name + year_month + day_created + day_name + hour_created | etablissement_id, data =.)
+
+summary(negbin_candidature)
+
+#Check for over/under dispersion
+E2 <- resid(negbin_candidature, type = "pearson")
+N  <- nrow(df)
+p  <- length(coef(negbin_candidature))   
+sum(E2^2) / (N - p)
+```
+```{r}
+#collinearity(negbin_candidature)
+```
+
+With the negative binomial model, we get closer to 1. It means that we controlled for over dispersion. Thus, the model is now best suited for our estimations.
+
+Let's run the model without FE it will be used for the mapping of "etab_code_postal" coefficients :
+```{r}
+negbin_candidature_woFE <- df %>% glm.nb(nb_candidature ~ log(nb_notified) + log(wage_h) + total_week_nonna + salary_type_lbl+ pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + presentation + length_presentation + mis_en_avant + job_name  + etab_code_postal + etab_category_nom + year_month + day_created + day_name + hour_created, data=.)
+
+#summary(negbin_candidature_woFE )
+
+#Check for over/under dispersion
+E2 <- resid(negbin_candidature, type = "pearson")
+N  <- nrow(df)
+p  <- length(coef(negbin_candidature))   
+sum(E2^2) / (N - p)
+```
+
+## 2. Estimate what influences the number of interviews "nb_entretien" (i.e The restaurant notify its interest to one or more candidates)
+
+After the candidature step, a lot of variables take value 0, thus, the zero inflated model may be more suitable.
+(Stat_des shows this graphically)
+
+We are going to test for different Poisson model and will sort them out to conclude which one is best suited for the real data distribution.
+
+```{r}
+# Share of zeros of our dependant variable (43%)
+100*sum(df$nb_entretien == 0)/nrow(df)
+```
+There is 43% of zeros at the entretien stage. It means that 43% of restaurants did not go further candidature stage in the recruitment process. This amount of zeros mays be the source of overdispersion. We are going to compare the different models and sort them out in order to find out which one estimates best to our actual distribution.
+
+### a. The "classic" Poisson model
+
+```{r}
+##Poisson GLM model (wo FE)
+poiss_entretien_woFE <- df %>% fepois(nb_entretien ~ log(nb_notified) + log(wage_h) + salary_type_lbl + total_week_nonna + pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + presentation + length_presentation + mis_en_avant + job_name + etab_category_nom  + etab_code_postal+ year_month + day_created + day_name + hour_created, data=.)
+
+#Poisson GLM model
+poiss_entretien <- df %>%  fepois(nb_entretien ~ log(nb_notified) + log(wage_h) + salary_type_lbl + total_week_nonna + pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + length_presentation + mis_en_avant + job_name + year_month + day_created + day_name + hour_created | etablissement_id, data=.)
+
+summary(poiss_entretien)
+
+list(poiss_entretien_woFE, poiss_entretien) %>% 
+  modelsummary::modelsummary()
+
+#Check for over/under dispersion
+E2 <- resid(poiss_entretien_woFE, type = "pearson")
+N  <- nrow(df)
+p  <- length(coef(poiss_entretien_woFE))   
+sum(E2^2) / (N - p)
+
+#Check for over/under dispersion
+E2 <- resid(poiss_entretien, type = "pearson")
+N  <- nrow(df)
+p  <- length(coef(poiss_entretien))   
+sum(E2^2) / (N - p)
+```
+```{r}
+#collinearity(Poisson_entretien)
+```
+
+Given the fact that there is overdispersion (but alaso because the poisson assumptions are restricted) we are going to propose a negative binomial model.
+
+## b. The negative binomial model
+
+```{r}
+#Negative binomial with maximum likelihood estimator
+negbin_entretien_max_likelihood <- df %>% femlm(nb_entretien ~ log(nb_notified) + log(wage_h) + salary_type_lbl + total_week_nonna + pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + length_presentation + mis_en_avant + job_name + year_month + day_created + day_name + hour_created| etablissement_id , data =., family =("negbin"))
+
+summary(negbin_entretien_max_likelihood)
+
+#Check for over/under dispersion
+E2 <- resid(negbin_entretien_max_likelihood, type = "pearson")
+N  <- nrow(df)
+p  <- length(coef(negbin_entretien_max_likelihood))   
+sum(E2^2) / (N - p)
+```
+With this model we have some underdispersion. 
+Where are going the prefer the generalized linear model :
+
+```{r}
+## The negative binomial with generalized linear model
+negbin_entretien <- df %>% fenegbin (nb_entretien ~ log(nb_notified) + log(wage_h) + salary_type_lbl + total_week_nonna + pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + length_presentation + mis_en_avant + job_name + year_month + day_created + day_name + hour_created | etablissement_id, data =.)
+
+summary(negbin_entretien)
+
+#Check for over/under dispersion
+E2 <- resid(negbin_entretien, type = "pearson")
+N  <- nrow(df)
+p  <- length(coef(negbin_entretien))   
+sum(E2^2) / (N - p)
+```
+```{r}
+# The negative binomial model cannot handle the collinearity issues by its own. Thus, we have to check for collinear variables and adapt the model
+#collinearity(negbin_entretien)
+```
+
+In this case we have some underdispersion.
+The issue with overdispersion is that it may create false significative variables. On the contrary, underdispersion may mask truly significant variables.
+We choose not to perform a zero-inflated model. Indeed, the two steps regression is not relevant in this situation. Indeed, here, the zeros are all "true zeros" and can not reflect a default in the variable collection.
+
+Let's run the model without FE it will be used for the mapping of "etab_code_postal" coefficients :
+```{r}
+## Running the fenegbin function raised a collinearity issue, with this command 'glm.nb' the problem seesm to be solved.
+# The issue seemed to occur with the variable 'etab_code_postal', however, nothing to explain why this problem occurs with the dependant variable nb_entretien and did not with variable nb_candidature
+
+negbin_entretien_woFE <- df %>% glm.nb(nb_entretien ~ log(nb_notified) + log(wage_h) + total_week_nonna + salary_type_lbl + pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + + presentation + length_presentation + mis_en_avant + job_name + etab_code_postal + etab_category_nom + year_month + day_created + day_name + hour_created, data=.)
+
+#summary(negbin_entretien_woFE )
+
+#Check for over/under dispersion
+E2 <- resid(negbin_entretien_woFE, type = "pearson")
+N  <- nrow(df)
+p  <- length(coef(negbin_entretien_woFE))   
+sum(E2^2) / (N - p)
+```
+```{r}
+#collinearity(negbin_entretien_woFE)
+```
+## 3. Estimate what influences 'nb_reponse_extra' (i.e how many times the candidates to answer to a restaurant when the are invited for an interview)
+
+At the number of responses from candidates, we have a high number of zeros :
+(Stat_des shows this graphically)
+
+```{r}
+# Share of zeros of our dependant variable (43%)
+100*sum(df$nb_reponse_extra == 0)/nrow(df)
+```
+There is 63% of zeros at the nb_reponse_extra stage. It means that 63% of restaurants did not go further interview stage in the recruitment process, the extra decided to not respond to the interview proposition of the restaurant. It can be an indicator for the application quality, its characteristics are studied in an other part of the analysis where the idiosyncratic characteristics of the notified individuals are included (extra_demande). This amount of zeros may be the source of overdispersion. 
+
+We are going to test for different Poisson model and will sort them out to conclude which one is best suited for the real data distribution.
+
+### a. The "classic" Poisson model
+
+```{r}
+##Poisson GLM model (wo FE)
+poiss_rep_extra_woFE <- df %>% fepois(nb_reponse_extra ~ log(nb_notified) + log(wage_h) + salary_type_lbl + total_week_nonna + pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + presentation + length_presentation + mis_en_avant + job_name + etab_category_nom  + etab_code_postal+ year_month + day_created + day_name + hour_created, data=.)
+
+#Poisson GLM model
+poiss_rep_extra <- df %>%  fepois(nb_reponse_extra ~ log(nb_notified) + log(wage_h) + salary_type_lbl + total_week_nonna + pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + length_presentation + mis_en_avant + job_name + year_month + day_created + day_name + hour_created | etablissement_id, data=.)
+
+summary(poiss_rep_extra)
+
+list(poiss_rep_extra_woFE, poiss_rep_extra) %>% 
+  modelsummary::modelsummary()
+
+#Check for over/under dispersion
+E2 <- resid(poiss_rep_extra_woFE, type = "pearson")
+N  <- nrow(df)
+p  <- length(coef(poiss_rep_extra_woFE))   
+sum(E2^2) / (N - p)
+
+#Check for over/under dispersion
+E2 <- resid(poiss_rep_extra, type = "pearson")
+N  <- nrow(df)
+p  <- length(coef(poiss_rep_extra))   
+sum(E2^2) / (N - p)
+```
+```{r}
+#collinearity(poiss_rep_extra)
+```
+
+The residuals of the fixed effect model are not too much dispersed.
+
+
+## b. The negative binomial model
+
+```{r}
+#Negative binomial with maximum likelihood estimator
+negbin_rep_extra_max_likelihood <- df %>% femlm(nb_reponse_extra ~ log(nb_notified) + log(wage_h) + salary_type_lbl + total_week_nonna + pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + length_presentation + mis_en_avant + job_name + year_month + day_created + day_name + hour_created| etablissement_id , data =., family =("negbin"))
+
+summary(negbin_rep_extra_max_likelihood)
+
+#Check for over/under dispersion
+E2 <- resid(negbin_rep_extra_max_likelihood, type = "pearson")
+N  <- nrow(df)
+p  <- length(coef(negbin_rep_extra_max_likelihood))   
+sum(E2^2) / (N - p)
+```
+With this model we have some under dispersion. 
+Where are going the prefer the generalized linear model :
+
+```{r}
+## The negative binomial with generalized linear model
+negbin_rep_extra <- df %>% fenegbin (nb_reponse_extra ~ log(nb_notified) + log(wage_h) + salary_type_lbl + total_week_nonna + pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + length_presentation + mis_en_avant + job_name + year_month + day_created + day_name + hour_created | etablissement_id, data =.)
+
+summary(negbin_rep_extra)
+
+#Check for over/under dispersion
+E2 <- resid(negbin_rep_extra, type = "pearson")
+N  <- nrow(df)
+p  <- length(coef(negbin_rep_extra))   
+sum(E2^2) / (N - p)
+```
+```{r}
+# Trying to use the over-dispersion parameter used before
+## The negative binomial with generalized linear model
+negbin_rep_extra_bis <- df %>% feglm (nb_reponse_extra ~ log(nb_notified) + log(wage_h) + salary_type_lbl + total_week_nonna + pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + length_presentation + mis_en_avant + job_name + year_month + day_created + day_name + hour_created | etablissement_id, data =., family = negative.binomial(1.982964))
+
+summary(negbin_rep_extra)
+
+#Check for over/under dispersion
+E2 <- resid(negbin_rep_extra, type = "pearson")
+N  <- nrow(df)
+p  <- length(coef(negbin_rep_extra))   
+sum(E2^2) / (N - p)
+```
+We find the same result.
+The model fitting of a negative binomial is find with a maximum likelihood ("https://stats.stackexchange.com/questions/395267/choosing-the-optimal-theta-dispersion-parameter-for-negative-binomial-regressi") thus, it finds the optimal theata for the model fitting.
+
+```{r}
+# The negative binomial model cannot handle the collinearity issues by its own. Thus, we have to check for collinear variables and adapt the model
+#collinearity(negbin_entretien)
+```
+
+In this case we have some underdispersion.
+The issue with overdispersion is that it may create false significant variables. On the contrary, underdispersion may mask truly significant variables.
+We choose not to perform a zero-inflated model. Indeed, the two steps regression is not relevant in this situation. Indeed, here, the zeros are all "true zeros" and can not reflect a default in the variable collection.
+
+Let's run the model without FE it will be used for the mapping of "etab_code_postal" coefficients :
+```{r}
+## Running the fenegbin function raised a collinearity issue, with this command 'glm.nb' the problem seems to be solved.
+# The issue seemed to occur with the variable 'etab_code_postal', however, nothing to explain why this problem occurs with the dependent variable nb_entretien + nb_responde_extra and did not with variable nb_candidature
+
+negbin_rep_extra_woFE <- df %>% glm.nb (nb_reponse_extra ~ log(nb_notified) + log(wage_h) + total_week_nonna + salary_type_lbl + pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + presentation + length_presentation + mis_en_avant + job_name + etab_code_postal + etab_category_nom + year_month + day_created + day_name + hour_created, data=.)
+
+#summary(negbin_entretien_woFE )
+
+#Check for over/under dispersion
+E2 <- resid(negbin_rep_extra_woFE, type = "pearson")
+N  <- nrow(df)
+p  <- length(coef(negbin_rep_extra_woFE))   
+sum(E2^2) / (N - p)
+```
+
+
+```{r}
+#collinearity(negbin_entretien_woFE)
+```
+
+## 4. Estimate what influences 'nb_embauche' (i.e the number of hired people at the end of the recruitment process)
+It is important to keep in mind the fact that restaurants are not constrained to feedback Extracadabra when they hire a candidate. As a consequence, the hiring rate is small and the estimates may not reflect the actual number of hired people.
+
+```{r}
+# Share of zeros of our dependant variable 
+100*sum(df$nb_embauche == 0)/nrow(df)
+```
+There is 91% of zeros at the entretien stage. It means that 91% of restaurants could not manage to hire a candidate via the Extracadabra platform. This amount of zeros may be the source of overdispersion. We are going to compare the different models and sort them out in order to find out which one estimates best to our actual distribution.
+
+### a. The "classic" Poisson model
+
+```{r}
+##Poisson GLM model (wo FE)
+poiss_embauche_woFE <- df %>% fepois(nb_embauche ~ log(nb_notified) + log(wage_h) + salary_type_lbl + total_week_nonna + pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + presentation + length_presentation + mis_en_avant + job_name + etab_category_nom  + etab_code_postal+ year_month + day_created + day_name + hour_created, data=.)
+
+#Poisson GLM model
+poiss_embauche <- df %>%  fepois(nb_embauche ~ log(nb_notified) + log(wage_h) + salary_type_lbl + total_week_nonna + pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + length_presentation + mis_en_avant + job_name + year_month + day_created + day_name + hour_created | etablissement_id, data=.)
+
+summary(poiss_embauche)
+
+list(poiss_embauche_woFE, poiss_embauche) %>% 
+  modelsummary::modelsummary()
+
+#Check for over/under dispersion
+E2 <- resid(poiss_embauche_woFE, type = "pearson")
+N  <- nrow(df)
+p  <- length(coef(poiss_embauche_woFE))   
+sum(E2^2) / (N - p)
+
+#Check for over/under dispersion
+E2 <- resid(poiss_embauche, type = "pearson")
+N  <- nrow(df)
+p  <- length(coef(poiss_embauche))   
+sum(E2^2) / (N - p)
+```
+```{r}
+#collinearity(Poisson_entretien)
+```
+
+In this case, the pearson residuals show that there is some under dispersion for the fiexed effect model.
+
+## b. The negative binomial model
+
+```{r}
+#Negative binomial with maximum likelihood estimator
+negbin_embauche_max_likelihood <- df %>% femlm(nb_embauche ~ log(nb_notified) + log(wage_h) + salary_type_lbl + total_week_nonna + pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + length_presentation + mis_en_avant + job_name + year_month + day_created + day_name + hour_created| etablissement_id , data =., family =("negbin"))
+
+summary(negbin_embauche_max_likelihood)
+
+#Check for over/under dispersion
+E2 <- resid(negbin_embauche_max_likelihood, type = "pearson")
+N  <- nrow(df)
+p  <- length(coef(negbin_embauche_max_likelihood))   
+sum(E2^2) / (N - p)
+```
+With this model we have some underdispersion. 
+Where are going the prefer the generalized linear model :
+
+```{r}
+## The negative binomial with generalized linear model
+negbin_embauche <- df %>% fenegbin (nb_embauche ~ log(nb_notified) + log(wage_h) + salary_type_lbl + total_week_nonna + pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + length_presentation + mis_en_avant + job_name + year_month + day_created + day_name + hour_created | etablissement_id, data =.)
+
+summary(negbin_embauche)
+
+#Check for over/under dispersion
+E2 <- resid(negbin_embauche, type = "pearson")
+N  <- nrow(df)
+p  <- length(coef(negbin_embauche))   
+sum(E2^2) / (N - p)
+```
+```{r}
+# The negative binomial model cannot handle the collinearity issues by its own. Thus, we have to check for collinear variables and adapt the model
+#collinearity(negbin_embauche)
+```
+
+Let's run the model without FE it will be used for the mapping of "etab_code_postal" coefficients :
+```{r}
+## Running the fenegbin function raised a collinearity issue, with this command 'glm.nb' the problem seems to be solved.
+# The issue seemed to occur with the variable 'etab_code_postal', however, nothing to explain why this problem occurs with the dependent variable nb_embauche and did not with variable nb_candidature
+
+negbin_embauche_woFE <- df %>% glm.nb(nb_embauche ~ log(nb_notified) + log(wage_h) + total_week_nonna + salary_type_lbl + pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + + presentation + length_presentation + mis_en_avant + job_name + etab_code_postal + etab_category_nom + year_month + day_created + day_name + hour_created, data=.)
+
+#summary(negbin_embauche_woFE )
+
+#Check for over/under dispersion
+E2 <- resid(negbin_embauche, type = "pearson")
+N  <- nrow(df)
+p  <- length(coef(negbin_embauche))   
+sum(E2^2) / (N - p)
+```
+
+```{r}
+#collinearity(negbin_embauche_woFE)
+```
+
+With the dependent variable 'nb_embauche' the pearson estimate is closer to one when we run a poisson regression. Which model should we use between Poisson and Negative binomial ?
+
+
+## 5. Is there heterogeneity between type of jobs ? (code FAMMET : 2 and 3)
+
+### a. Candidature stage
+
+- Poisson
+
+    ```{r}
+    #Benchmark w. estab FE : code fammet = 2 (waiter)
+    poiss_candidature_waiter <- df %>% 
+      filter(code_fam_met== "2") %>%
+    fepois(nb_candidature ~ log(nb_notified) + log(wage_h) + total_week_nonna + salary_type_lbl + pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + presentation + length_presentation + mis_en_avant + job_name + year_month + day_created + day_name + hour_created | etablissement_id, data=.)
+    #Benchmark w. estab FE : code fammet = 3 (cooker)
+    poiss_candidature_cooker <- df %>% 
+        filter(code_fam_met== "3") %>%
+      fepois(nb_candidature ~ log(nb_notified) + log(wage_h) + total_week_nonna + salary_type_lbl + pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + presentation + length_presentation + mis_en_avant + job_name + year_month + day_created + day_name + hour_created | etablissement_id, data=.)
+
+    list(poiss_candidature_waiter, poiss_candidature_cooker) %>% 
+      modelsummary::modelsummary()
+    
+    #Check for over/under dispersion : waiter
+E2 <- resid(poiss_candidature_waiter, type = "pearson")
+N  <- nrow(df)
+p  <- length(coef(poiss_candidature_waiter))   
+sum(E2^2) / (N - p)
+
+#Check for over/under dispersion : cooker
+E2 <- resid(poiss_candidature_cooker, type = "pearson")
+N  <- nrow(df)
+p  <- length(coef(poiss_candidature_cooker))   
+sum(E2^2) / (N - p)
+    ```
+
+- Negative Binomial
+    ```{r}
+    #Benchmark w. estab FE : code fammet = 2 (waiter)
+    negbin_candidature_waiter <- df %>% 
+      filter(code_fam_met== "2") %>%
+    fenegbin(nb_candidature ~ log(nb_notified) + log(wage_h) + total_week_nonna + salary_type_lbl + pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + length_presentation + mis_en_avant + job_name + year_month + day_created + day_name + hour_created | etablissement_id, data=.)
+    #Benchmark w. estab FE : code fammet = 3 (cooker)
+    #For this regression, we have to remove the variable job_name because of collinearity issues
+    negbin_candidature_cooker <- df %>% 
+        filter(code_fam_met== "3") %>%
+      fenegbin(nb_candidature ~ log(nb_notified) + log(wage_h) + total_week_nonna + salary_type_lbl + pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + length_presentation + mis_en_avant + year_month + day_created + day_name + hour_created | etablissement_id + job_name, data=.)
+
+    list(negbin_candidature_waiter, negbin_candidature_cooker) %>% 
+      modelsummary::modelsummary()
+    
+    #Check for over/under dispersion : waiter
+E2 <- resid(negbin_candidature_waiter, type = "pearson")
+N  <- nrow(df)
+p  <- length(coef(negbin_candidature_waiter))   
+sum(E2^2) / (N - p)
+
+#Check for over/under dispersion : cooker
+E2 <- resid(negbin_candidature_cooker, type = "pearson")
+N  <- nrow(df)
+p  <- length(coef(negbin_candidature_cooker))   
+sum(E2^2) / (N - p)
+    ```
+### b. Interview stage
+
+-   Poisson
+    ```{r}
+    #Benchmark w. estab FE : code fammet = 2 (waiter)
+    poiss_entretien_waiter <- df %>% 
+      filter(code_fam_met== "2") %>%
+    fepois(nb_entretien ~ log(nb_notified) + log(wage_h) + total_week_nonna + salary_type_lbl + pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + length_presentation + mis_en_avant + job_name + year_month + day_created + day_name + hour_created | etablissement_id, data=.)
+    #Benchmark w. estab FE : code fammet = 3 (cooker)
+    poiss_entretien_cooker <- df %>% 
+        filter(code_fam_met== "3") %>%
+      fepois(nb_entretien ~ log(nb_notified) + log(wage_h) + total_week_nonna + salary_type_lbl + pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + length_presentation + mis_en_avant + job_name + year_month + day_created + day_name + hour_created | etablissement_id, data=.)
+
+    list(poiss_entretien_waiter, poiss_entretien_cooker) %>% 
+      modelsummary::modelsummary()
+    
+ #Check for over/under dispersion : waiter
+E2 <- resid(poiss_entretien_waiter, type = "pearson")
+N  <- nrow(df)
+p  <- length(coef(poiss_entretien_waiter))   
+sum(E2^2) / (N - p)
+
+#Check for over/under dispersion : cooker
+E2 <- resid(poiss_entretien_cooker, type = "pearson")
+N  <- nrow(df)
+p  <- length(coef(poiss_entretien_cooker))   
+sum(E2^2) / (N - p)
+    ```
+
+- Negative Binomial
+    ```{r}
+    #Benchmark w. estab FE : code fammet = 2 (waiter)
+    negbin_entretien_waiter <- df %>% 
+      filter(code_fam_met== "2") %>%
+    fenegbin(nb_entretien ~ log(nb_notified) + log(wage_h) + total_week_nonna + salary_type_lbl + pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + length_presentation + mis_en_avant + job_name + year_month + day_created + day_name + hour_created | etablissement_id, data=.)
+    #Benchmark w. estab FE : code fammet = 3 (cooker)
+    #For this regression, we have to remove the variable job_name because of collinearity issues (with modality second de cuisine)
+    negbin_entretien_cooker <- df %>% 
+        filter(code_fam_met== "3") %>%
+      fenegbin(nb_entretien ~ log(nb_notified) + log(wage_h) + total_week_nonna + salary_type_lbl + pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + length_presentation + mis_en_avant + year_month + day_created + day_name + hour_created | etablissement_id + job_name, data=.)
+
+    list(negbin_entretien_waiter, negbin_entretien_cooker) %>% 
+      modelsummary::modelsummary()
+    
+    #Check for over/under dispersion : waiter
+E2 <- resid(negbin_entretien_waiter, type = "pearson")
+N  <- nrow(df)
+p  <- length(coef(negbin_entretien_waiter))   
+sum(E2^2) / (N - p)
+
+#Check for over/under dispersion : cooker
+E2 <- resid(negbin_entretien_cooker, type = "pearson")
+N  <- nrow(df)
+p  <- length(coef(negbin_entretien_cooker))   
+sum(E2^2) / (N - p)
+    ```
+At the interview stage, the negative binomial procedure accentuate over dispersion for cookers jobs.
+
+### c. The extra response stage
+
+-   Poisson
+
+    ```{r}
+    #Benchmark w. estab FE : code fammet = 2 (waiter)
+    poiss_rep_extra_waiter <- df %>% 
+      filter(code_fam_met== "2") %>%
+    fepois(nb_reponse_extra ~ log(nb_notified) + log(wage_h) + total_week_nonna + salary_type_lbl + pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + length_presentation + mis_en_avant + job_name + year_month + day_created + day_name + hour_created | etablissement_id, data=.)
+    #Benchmark w. estab FE : code fammet = 3 (cooker)
+    poiss_rep_extra_cooker <- df %>% 
+        filter(code_fam_met== "3") %>%
+      fepois(nb_reponse_extra ~ log(nb_notified) + log(wage_h) + total_week_nonna + salary_type_lbl + pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + length_presentation + mis_en_avant + job_name + year_month + day_created + day_name + hour_created | etablissement_id, data=.)
+
+    list(poiss_rep_extra_waiter, poiss_rep_extra_cooker) %>% 
+      modelsummary::modelsummary()
+    
+ #Check for over/under dispersion : waiter
+E2 <- resid(poiss_rep_extra_waiter, type = "pearson")
+N  <- nrow(df)
+p  <- length(coef(poiss_rep_extra_waiter))   
+sum(E2^2) / (N - p)
+
+#Check for over/under dispersion : cooker
+E2 <- resid(poiss_rep_extra_cooker, type = "pearson")
+N  <- nrow(df)
+p  <- length(coef(poiss_rep_extra_cooker))   
+sum(E2^2) / (N - p)
+    ```
+
+- Negative Binomial
+    ```{r}
+    #Benchmark w. estab FE : code fammet = 2 (waiter)
+    negbin_rep_extra_waiter <- df %>% 
+      filter(code_fam_met== "2") %>%
+    fenegbin(nb_reponse_extra ~ log(nb_notified) + log(wage_h) + total_week_nonna + salary_type_lbl + pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + length_presentation + mis_en_avant + job_name + year_month + day_created + day_name + hour_created | etablissement_id, data=.)
+    #Benchmark w. estab FE : code fammet = 3 (cooker)
+    #For this regression, we have to remove the variable job_name because of collinearity issues (with modality second de cuisine)
+    negbin_rep_extra_cooker <- df %>% 
+        filter(code_fam_met== "3") %>%
+      fenegbin(nb_reponse_extra ~ log(nb_notified) + log(wage_h) + total_week_nonna + salary_type_lbl + pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + length_presentation + mis_en_avant + year_month + day_created + day_name + hour_created | etablissement_id + job_name, data=.)
+
+    list(negbin_rep_extra_waiter, negbin_rep_extra_cooker) %>% 
+      modelsummary::modelsummary()
+    
+    #Check for over/under dispersion : waiter
+E2 <- resid(negbin_rep_extra_waiter, type = "pearson")
+N  <- nrow(df)
+p  <- length(coef(negbin_rep_extra_waiter))   
+sum(E2^2) / (N - p)
+
+#Check for over/under dispersion : cooker
+E2 <- resid(negbin_rep_extra_cooker, type = "pearson")
+N  <- nrow(df)
+p  <- length(coef(negbin_rep_extra_cooker))   
+sum(E2^2) / (N - p)
+    ```
+
+### d. The hiring stage
+
+-   Poisson
+
+    ```{r}
+    #Benchmark w. estab FE : code fammet = 2 (waiter)
+    poiss_embauche_waiter <- df %>% 
+      filter(code_fam_met== "2") %>%
+    fepois(nb_embauche ~ log(nb_notified) + log(wage_h) + total_week_nonna + salary_type_lbl + pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + length_presentation + mis_en_avant + job_name + year_month + day_created + day_name + hour_created | etablissement_id, data=.)
+    #Benchmark w. estab FE : code fammet = 3 (cooker)
+    poiss_embauche_cooker <- df %>% 
+        filter(code_fam_met== "3") %>%
+      fepois(nb_embauche ~ log(nb_notified) + log(wage_h) + total_week_nonna + salary_type_lbl + pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + length_presentation + mis_en_avant + job_name + year_month + day_created + day_name + hour_created | etablissement_id, data=.)
+
+    list(poiss_embauche_waiter, poiss_embauche_cooker) %>% 
+      modelsummary::modelsummary()
+    
+ #Check for over/under dispersion : waiter
+E2 <- resid(poiss_embauche_waiter, type = "pearson")
+N  <- nrow(df)
+p  <- length(coef(poiss_embauche_waiter))   
+sum(E2^2) / (N - p)
+
+#Check for over/under dispersion : cooker
+E2 <- resid(poiss_embauche_cooker, type = "pearson")
+N  <- nrow(df)
+p  <- length(coef(poiss_embauche_cooker))   
+sum(E2^2) / (N - p)
+    ```
+
+- Negative Binomial
+    ```{r}
+    #Benchmark w. estab FE : code fammet = 2 (waiter)
+    negbin_embauche_waiter <- df %>% 
+      filter(code_fam_met== "2") %>%
+    fenegbin(nb_embauche ~ log(nb_notified) + log(wage_h) + total_week_nonna + salary_type_lbl + pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + length_presentation + mis_en_avant + job_name + year_month + day_created + day_name + hour_created | etablissement_id, data=.)
+    #Benchmark w. estab FE : code fammet = 3 (cooker)
+    #For this regression, we have to remove the variable job_name because of collinearity issues (with modality second de cuisine)
+    negbin_embauche_cooker <- df %>% 
+        filter(code_fam_met== "3") %>%
+      fenegbin(nb_embauche ~ log(nb_notified) + log(wage_h) + total_week_nonna + salary_type_lbl + pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + length_presentation + mis_en_avant + year_month + day_created + day_name + hour_created | etablissement_id + job_name, data=.)
+
+    list(negbin_embauche_waiter, negbin_embauche_cooker) %>% 
+      modelsummary::modelsummary()
+    
+    #Check for over/under dispersion : waiter
+E2 <- resid(negbin_embauche_waiter, type = "pearson")
+N  <- nrow(df)
+p  <- length(coef(negbin_embauche_waiter))   
+sum(E2^2) / (N - p)
+
+#Check for over/under dispersion : cooker
+E2 <- resid(negbin_embauche_cooker, type = "pearson")
+N  <- nrow(df)
+p  <- length(coef(negbin_embauche_cooker))   
+sum(E2^2) / (N - p)
+    ```
+These model (declinaison by job category) do not show any sign of over dispersion? Thus, the Poisson model may be preferred in this situation.
+
+## 6. Output 
+
+```{r}
+library(modelsummary)
+library(gtsummary)
+library(kableExtra)
+library(gt)
+
+#option(modelsummary_format_numeric_latex = "plain")
+```
+
+
+
+
+```{r}
+models_negbin_FE <- list()
+models_negbin_FE[['Nombre de Candidatures']] <- negbin_candidature
+models_negbin_FE[["Nombre d'entretiens"]] <- negbin_entretien
+models_negbin_FE[['Nombre de réponses des candidats']] <- negbin_rep_extra
+models_negbin_FE[["Nombre d'embauches"]] <- negbin_embauche
+
+models_poiss_negbin <- list()
+models_poiss_negbin[['Poisson 1']] <- poiss_candidature
+models_poiss_negbin[['Negative Binomial 1']] <- negbin_candidature
+models_poiss_negbin[['Poisson 2']] <- poiss_entretien
+models_poiss_negbin[['Negative Binomial 2']] <- negbin_entretien
+models_poiss_negbin[['Poisson 3']] <- poiss_rep_extra
+models_poiss_negbin[['Negative Binomial 4']] <- negbin_rep_extra
+models_poiss_negbin[['Poisson 5']] <- poiss_embauche
+models_poiss_negbin[['Negative Binomial 5']] <- negbin_embauche
+
+
+used_coef <- c("log(nb_notified)"="log(nombre d'individus notifiés)",
+          "log(wage_h)"="log(salaire horaire (net))", 
+          "salary_type_lblgross salary" = "sal. lbl (mensuel brut)",
+          "salary_type_lblhourly wage (gross)"="sal.lbl (brut par heure)", 
+          "salary_type_lblhourly wage (net)" ="sal.lbl (horaire net)",
+          "salary_type_lblunknown"="salaire manquant", 
+          "total_week_nonna"="heures hebdomadaires", 
+          "pause_average_1_2TRUE" = "pause moyenne (1h-2h)", 
+          "pause_average_2plusTRUE" = "pause moyenne (2h et plus)", 
+          "coupure_textNo"="coupure (Non)", 
+          "coupure_textYes"= "coupure (Oui)", 
+          "working_daysrest_week" = "jours (semaine restauration)", 
+          "working_daysweek"="jours (semaine)", 
+          "working_daysweek_end"="jours (week-end)", 
+          "tips"="pourboires", 
+          "length_presentation"="longueur présentation (mots)", 
+          "mis_en_avant"="mis en avant")
+```
+```{r}
+#Only Negative Binomial Models
+regnegbin <- modelsummary (models_negbin_FE, 
+             stars = FALSE,
+             coef_map = used_coef,
+             title = "Influence des caractéristiques de l'offre d'emploi sur le processus de recrutement",
+             fmt = 3,
+             shape = term ~ model + statistic,
+             estimate = "{estimate}{stars}",
+             statistic = "({p.value})",
+            # statistic = c("s.e={std.error}",
+            #                "p={p.value}"),
+             gof_map = c("nobs", "r.squared", "r.squared adj.", "r.squared within", "r.squared within adj."),
+             notes = c("Autres variables de contrôle : type de métier, établissement id., commune et arrondissement, création de l'annonce (année, mois, jours du mois, jour de la semaine, heure)","Std. error et fixed-effects par ID.Etablissement","Niv. Signif.: ***: 0.01, **: 0.05, *: 0.1"),
+             output = "latex")
+
+#Customization
+regnegbin <- regnegbin %>% 
+  kable_styling(latex_options = c("scale_down")) %>%
+  pack_rows("Baseline : salaire net mensuel",3,5) %>%
+  pack_rows("Baseline: pause de moins d'une heure",8,9)%>%
+  pack_rows("Baseline: coupure non indiquée",10,11)%>%
+  pack_rows("Baseline: absence de planning",12,14) %>%
+  add_header_above(c(" "=1, "Modèle Negative Binomial avec effets fixes établissement"=8))%>%
+  save_kable(tab, file = "estimates_demande_negbinFE.tex", escape=FALSE)
+  
+```
+
+
+
+```{r}
+#Comparison Negative Binomial and Poisson coef
+comparisonnegpois <- modelsummary(models_poiss_negbin, 
+             coef_map = used_coef,
+             title = "Modèles de Poisson et Negative Binomial : comparaison des estimations",
+             fmt = 3,
+             #shape =  term ~ model +statistic,
+             estimate = "{estimate}{stars}",
+             statistic = NULL,
+             #statistic = "({p.value})",
+            # statistic = c("s.e={std.error}",
+            #                "p={p.value}"),
+             gof_map = c("nobs", "r.squared", "r.squared adj.", "r.squared within", "r.squared within adj."),
+             notes = c("Autres variables de contrôle : type de métier, établissement id., commune et arrondissement, création de l'annonce (année, mois, jours du mois, jour de la semaine, heure)","Std. error et fixed-effects par ID.Etablissement","Niv. Signif.: ***: 0.01, **: 0.05, *: 0.1"),
+             output = "latex")
+
+#Customization
+comparisonnegpois <- comparisonnegpois %>%
+  kable_styling(latex_options = c("scale_down")) %>%
+  pack_rows("Baseline : salaire net mensuel",3,5) %>%
+  pack_rows("Baseline: pause de moins d'une heure",8,9)%>%
+  pack_rows("Baseline: coupure non indiquée",10,11)%>%
+  pack_rows("Baseline: absence de planning",12,14) %>%
+  add_header_above(c(" "=1, "Nombre de Candidatures"=2, "Nombre d'entretiens"=2, "Nombre de réponses des candidats"=2, "Nombre d'embauches"=2)) %>%
+  save_kable(tab, file = "estimates_demande_pois_negbin.tex", escape=FALSE)
+```
+
+- At the job category level
+```{r}
+models_negbin_met <- list()
+models_negbin_met[['Candidature (2)']] <- negbin_candidature_waiter
+models_negbin_met[['Entretien (2)']] <- negbin_entretien_waiter
+models_negbin_met[['Reponse extra (2)']] <- negbin_rep_extra_waiter
+models_negbin_met[['Embauche (2)']] <- negbin_embauche_waiter
+models_negbin_met[['Candidature (3)']] <- negbin_candidature_cooker
+models_negbin_met[['Entretien (3)']] <- negbin_entretien_cooker
+models_negbin_met[['Reponse extra (3)']] <- negbin_rep_extra_cooker
+models_negbin_met[['Embauche (3)']] <- negbin_embauche_cooker
+```
+```{r}
+job_family <- modelsummary(models_negbin_met, 
+             coef_map = used_coef,
+             title = "Influence des caractéristiques de l'offre d'emploi sur le processus de recrutement par familles de métier",
+             fmt = 3,
+             #shape =  term ~ model +statistic,
+             estimate = "{estimate}{stars}",
+             statistic = NULL,
+             #statistic = "({p.value})",
+            # statistic = c("s.e={std.error}",
+            #                "p={p.value}"),
+             gof_map = c("nobs", "r.squared", "r.squared adj.", "r.squared within", "r.squared within adj."),
+             notes = c("Autres variables de contrôle : type de métier, établissement id., commune et arrondissement, création de l'annonce (année, mois, jours du mois, jour de la semaine, heure)","Std. error et fixed-effects par ID.Etablissement","Niv. Signif.: ***: 0.01, **: 0.05, *: 0.1"),
+             output = "latex")
+
+#Customization
+job_family <- job_family %>%
+  kable_styling(latex_options = c("scale_down")) %>%
+  pack_rows("Baseline : salaire net mensuel",3,5) %>%
+  pack_rows("Baseline: pause de moins d'une heure",8,9)%>%
+  pack_rows("Baseline: coupure non indiquée",10,11)%>%
+  pack_rows("Baseline: absence de planning",12,14) %>%
+  add_header_above(c(" "=1, "Emplois en Salle"=4, "Emplois en Cuisine"=4)) %>%
+  add_header_above(c(" "=1, "Model Negative Binomial"=8))%>%
+  save_kable(tab, file = "estimates_demande_fammet_negbin.tex", escape=FALSE) 
+
+```
+
+## 7. Lets' compare the different models
+```{r}
+## coefficient : used_coef
+## Models :
+       # Poisson FE
+      # Poisson WoFE
+     # Negbin FE
+    # Negbin WoFE
+# We decline this for each step of the analysis : Application, Interview, Extra reponses, Hiring stage
+
+#Application
+
+models_application <- list()
+models_application[['Poisson (woFE)']] <- poiss_candidature_woFE
+models_application[['Poisson']] <- poiss_candidature
+models_application[['Negative Binomial (woFE)']] <- negbin_candidature_woFE
+models_application[['Negative Binomial']] <- negbin_candidature
+
+#Interview
+models_interview <- list()
+models_interview[['Poisson (woFE)']] <- poiss_entretien_woFE
+models_interview[['Poisson']] <- poiss_entretien
+models_interview[['Negative Binomial (woFE)']] <- negbin_entretien_woFE
+models_interview[['Negative Binomial']] <- negbin_entretien
+
+#Reponse extra
+models_rep_extra <- list()
+models_rep_extra[['Poisson (woFE)']] <- poiss_rep_extra_woFE
+models_rep_extra[['Poisson']] <- poiss_rep_extra
+models_rep_extra[['Negative Binomial (woFE)']] <- negbin_rep_extra_woFE
+models_rep_extra[['Negative Binomial']] <- negbin_rep_extra
+
+#Embauche
+models_embauche <- list()
+models_embauche[['Poisson (woFE)']] <- poiss_embauche_woFE
+models_embauche[['Poisson']] <- poiss_embauche
+models_embauche[['Negative Binomial (woFE)']] <- negbin_embauche_woFE
+models_embauche[['Negative Binomial']] <- negbin_embauche
+```
+
+
+```{r}
+modelplot(models_application, coef_map=used_coef) +
+  labs(x='Coefficients',
+       y='Variables endogènes',
+       title="Comparaison de la taille des coefficients des différents modèles à l'étape candidature")+
+  scale_color_manual(values= wes_palette('Darjeeling1'))
+
+modelplot(models_interview, coef_map=used_coef)
+modelplot(models_rep_extra, coef_map=used_coef)
+modelplot(models_embauche, coef_map=used_coef)
+```
+
+
+
+## 7. Old specifications
+
+-   Without estab FE and all control variables
+
+```{r}
+#Benchmark wo. estab FE : candidature
+tmp1 <- df %>% fepois(nb_candidature ~ log(nb_notified) + log(wage_h) + wage_h_na + total_week_nonna + salary_type_lbl+ pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + presentation + length_presentation + job_name + mis_en_avant + etab_code_postal + etab_category_nom + year_month + day_created + day_name + hour_created, data=.)
+#Benchmark wo. estab FE : entretien
+tmp2 <- df %>% fepois(nb_entretien ~ log(nb_notified) + log(wage_h) + wage_h_na + total_week_nonna + salary_type_lbl+ pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + presentation + length_presentation + job_name + mis_en_avant + etab_code_postal + etab_category_nom + year_month + day_created + day_name + hour_created, data=.)
+#Benchmark wo. estab FE : reponse extra
+tmp3 <- df %>% fepois(nb_reponse_extra ~ log(nb_notified) + log(wage_h) + wage_h_na + total_week_nonna + salary_type_lbl+ pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + presentation + length_presentation + job_name + mis_en_avant + etab_code_postal + etab_category_nom + year_month + day_created + day_name + hour_created, data=.)
+#Benchmark wo. estab FE : embauche
+tmp4 <- df %>% fepois(nb_embauche ~ log(nb_notified) + log(wage_h) + wage_h_na + total_week_nonna + salary_type_lbl+ pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + presentation + length_presentation + job_name + mis_en_avant + etab_code_postal + etab_category_nom + year_month + day_created + day_name + hour_created, data=.)
+
+
+list(tmp1, tmp2, tmp3, tmp4) %>% 
+  modelsummary::modelsummary()
+
+```
+
+```{r}
+esttex (tmp1, tmp2, tmp3, tmp4)
+```
+
+-   With estab FE and all control variables
+
+```{r}
+#Benchmark w. estab FE : candidature
+tmp1 <- df %>%  fepois(nb_candidature ~ log(nb_notified) + log(wage_h) + wage_h_na + total_week_nonna + salary_type_lbl+ pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + presentation + length_presentation + job_name + mis_en_avant + etab_code_postal + etab_category_nom + year_month + day_created + day_name + hour_created | etablissement_id, data=.)
+#Benchmark w. estab FE : entretiens
+tmp2 <- df %>%  fepois(nb_entretien ~ log(nb_notified) + log(wage_h) + wage_h_na + total_week_nonna + salary_type_lbl+ pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + presentation + length_presentation + job_name + mis_en_avant + etab_code_postal + etab_category_nom + year_month + day_created + day_name + hour_created | etablissement_id, data=.)
+#Benchmark w. estab FE : reponses extra
+tmp3 <- df %>%  fepois(nb_reponse_extra ~ log(nb_notified) + log(wage_h) + wage_h_na + total_week_nonna + salary_type_lbl+ pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + presentation + length_presentation + job_name + mis_en_avant + etab_code_postal + etab_category_nom + year_month + day_created + day_name + hour_created | etablissement_id, data=.)
+#Benchmark w. estab FE : embauche
+tmp4 <- df %>%  fepois(nb_embauche ~ log(nb_notified) + log(wage_h) + wage_h_na + total_week_nonna + salary_type_lbl+ pause_average_1_2 + pause_average_2plus + coupure_text + working_days + tips + presentation + length_presentation + job_name + mis_en_avant + etab_code_postal + etab_category_nom + year_month + day_created + day_name + hour_created | etablissement_id, data=.)
+
+list(tmp1, tmp2, tmp3, tmp4) %>% 
+  modelsummary::modelsummary()
+```
+
+```{r}
+esttex(tmp1,tmp2,tmp3,tmp4)
+```
+
+
+CHEF DE RANG
+
+```{r}
+#Benchmark wo. estab FE
+tmp1 <- df %>% filter(job_cat=="Chef de rang") %>% 
+  fepois(nb_candidature ~ log(nb_notified) + log(wage_h) + wage_h_na + total_week_nonna + salary_type_lbl+ pause_average_1_2 + pause_average_2plus + coupure_text + working_days + job_name + mis_en_avant + etab_code_postal + etab_category_nom, data=.)
+#Benchmark w. estab FE
+tmp2 <- df %>% filter(job_cat=="Chef de rang") %>% 
+  fepois(nb_candidature ~ log(nb_notified) + log(wage_h) + wage_h_na + total_week_nonna + salary_type_lbl+ pause_average_1_2 + pause_average_2plus + coupure_text + working_days + job_name + mis_en_avant + etab_code_postal + etab_category_nom | etablissement_id, data=.)
+
+list(tmp1, tmp2) %>% 
+  modelsummary::modelsummary()
+```
+
+SERVEUR
+
+```{r}
+#Benchmark wo. estab FE
+tmp11 <- df %>% filter(job_cat=="Serveur") %>% 
+  fepois(nb_candidature ~ log(nb_notified) + log(wage_h) + wage_h_na + total_week_nonna + salary_type_lbl+ pause_average_1_2 + pause_average_2plus + coupure_text + working_days + job_name + mis_en_avant + etab_code_postal + etab_category_nom, data=.)
+#Benchmark w. estab FE
+tmp22 <- df %>% filter(job_cat=="Serveur") %>% 
+  fepois(nb_candidature ~ log(nb_notified) + log(wage_h) + wage_h_na + total_week_nonna + salary_type_lbl+ pause_average_1_2 + pause_average_2plus + coupure_text + working_days + job_name + mis_en_avant + etab_code_postal + etab_category_nom | etablissement_id, data=.)
+
+list(tmp11, tmp22) %>% 
+  modelsummary::modelsummary()
+```
+
+COMMIS DE CUISINE
+
+```{r}
+#Benchmark wo. estab FE
+tmp111 <- df %>% filter(job_cat=="Commis de cuisine") %>% 
+  fepois(nb_candidature ~ log(nb_notified) + log(wage_h) + wage_h_na + total_week_nonna + salary_type_lbl+ pause_average_1_2 + pause_average_2plus + coupure_text + working_days + job_name + mis_en_avant + etab_code_postal + etab_category_nom, data=.)
+#Benchmark w. estab FE
+tmp222 <- df %>% filter(job_cat=="Commis de cuisine") %>% 
+  fepois(nb_candidature ~ log(nb_notified) + log(wage_h) + wage_h_na + total_week_nonna + salary_type_lbl+ pause_average_1_2 + pause_average_2plus + coupure_text + working_days + job_name + mis_en_avant + etab_code_postal + etab_category_nom | etablissement_id, data=.)
+
+list(tmp111, tmp222) %>% 
+  modelsummary::modelsummary()
+```
+
+```{r}
+esttex(tmp1, tmp2, tmp11, tmp22, tmp111, tmp222)
+```
+
+
