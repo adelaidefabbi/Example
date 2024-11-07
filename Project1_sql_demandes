@@ -1,0 +1,91 @@
+SELECT
+    r.demande_id,
+    AVG(ind.related_studies) AS related_studies, 
+    AVG(ind.grandecole_cuisine) AS grandecole_cuisine,
+    AVG(ind.nb_exp_service) AS nb_exp_service, 
+    AVG(ind.nb_exp_cuisine) AS nb_exp_cuisine, 
+    AVG(ind.nb_en) AS nb_en, 
+    AVG(ind.nb_de) AS nb_de, 
+    AVG(ind.nb_it) AS nb_it, 
+    AVG(ind.nb_ru) AS nb_ru, 
+    AVG(ind.nb_ch) AS nb_ch, 
+    AVG(ind.nb_es) AS nb_es, 
+    AVG(CASE WHEN ind.genre = 'femme' THEN 1 ELSE 0 END) AS nb_fem,     
+    AVG(ind.prix) AS prix, 
+    COUNT(ind.related_studies) AS nb_ind
+FROM extracadabra_pp.reponses r
+LEFT JOIN (SELECT 
+schooldata.*, 
+expdata.nb_exp_service, 
+expdata.nb_exp_cuisine, 
+langdata.nb_en, 
+langdata.nb_de, 
+langdata.nb_it, 
+langdata.nb_ru, 
+langdata.nb_ch, 
+langdata.nb_es, 
+e.genre ,
+e.naissance ,
+e.naissance_lieu ,
+e.naissance_departement ,
+e.naissance_pays ,
+e.code_postal ,
+e.ville ,
+e.nationalite ,
+e.saisonnier ,
+e.prix ,
+e.vacances ,
+e.vehicule ,
+e.vehicule_voiture ,
+e.vehicule_moto
+FROM (SELECT 
+schooldata.extra_id, 
+schooldata.related_studies, 
+schooldata.grandecole_cuisine
+FROM (SELECT 
+cel2.extra_id,
+cel2.duration_id,
+cel2.school,
+cel2.title,
+cel2.`year`,
+CASE
+        WHEN cel2.title like '%turisme%' or cel2.title LIKE '%restaurant%' or cel2.title LIKE '%café%' or cel2.title LIKE '%brasserie%' or cel2.title LIKE '%boulanger%' or cel2.title LIKE '%hôtel%' or cel2.title LIKE '%Chef de rang%' or cel2.title LIKE '%evenementiel%' or cel2.title LIKE '%pâtissier%'or cel2.title LIKE '%bartender%' OR cel2.title LIKE '%restauratiom%'OR cel2.title LIKE '%cusinier%' OR cel2.title LIKE '%cousinier%' OR cel2.title LIKE '%cousine%' or cel2.title like '%hôtelier%' or cel2.title like '%hôtelière%' THEN 1
+        ELSE 0
+    END AS related_studies,
+CASE
+        WHEN cel2.school like '%Alain Ducasse%' or cel2.school like '%Tunon%' or cel2.school like '%ECOFIH%' or cel2.school like '%European bartender school%' or cel2.school like '%Excelia Group%' or cel2.school like '%Vatel Paris%' or cel2.school like '%Institut Paul Bocuse%' or cel2.school like '%le Cordon Bleu%' or cel2.school like '%Ferrandi%' or cel2.school like '%CHM%' or cel2.school like '%Jean Drouant%' or cel2.school like '%Guillame Tirel%' then 1
+        ELSE 0
+     END AS grandecole_cuisine
+FROM extracadabra_pp.candidate_education_line cel2
+) schooldata) schooldata
+LEFT JOIN 
+(SELECT 
+cel.extra_id,
+SUM(CASE WHEN q.famille_id = '2' THEN 1 ELSE 0 END) AS nb_exp_service, 
+SUM(CASE WHEN q.famille_id = '3' THEN 1 ELSE 0 END) AS nb_exp_cuisine
+FROM extracadabra_pp.candidate_experience_line cel
+LEFT JOIN (
+SELECT 
+id_qualification, 
+famille_id
+FROM extracadabra_pp.qualifications) q
+ON cel.qualification_id = q.id_qualification
+GROUP BY  cel.extra_id) expdata
+ON schooldata.extra_id  = expdata.extra_id 
+LEFT JOIN 
+(SELECT 
+cll.extra_id,
+SUM(case when cll.language_id  = '6' then 1 else 0 end) as nb_en,
+SUM(case when cll.language_id  = '4' then 1 else 0 end) as nb_de,
+SUM(case when cll.language_id  = '86' then 1 else 0 end) as nb_it,
+SUM(case when cll.language_id  = '163' then 1 else 0 end) as nb_ru,
+SUM(case when cll.language_id  = '122' then 1 else 0 end) as nb_ch,
+SUM(case when cll.language_id  = '45' then 1 else 0 end) as nb_es
+FROM extracadabra_pp.candidate_language_line cll 
+GROUP BY cll.extra_id) langdata
+ON schooldata.extra_id  = langdata.extra_id 
+LEFT JOIN extracadabra_pp.extras e ON schooldata.extra_id = e.id_extra
+GROUP BY schooldata.extra_id) ind
+ON r.extra_id = ind.extra_id
+WHERE r.demande_id = '127438' 
+GROUP BY r.demande_id
