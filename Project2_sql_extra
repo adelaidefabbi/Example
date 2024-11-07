@@ -1,0 +1,138 @@
+SELECT 
+id_mission, 
+notified, 
+applied, 
+hired,
+COUNT(extr.extra_id) AS n_indiv,
+AVG(CASE WHEN ind.genre = 'femme' THEN 1 ELSE 0 END) AS femme, 
+AVG(dur_related_studies) AS dur_related_studies,
+AVG(related_studies) AS related_studies,
+AVG(grandecole_cuisine) AS grandeecole_cuisine,
+AVG(nb_cdi_previous) AS nb_cdi_previous, 
+AVG(nb_cdd_previous) AS nb_cdd_previous, 
+AVG(nb_extra_previous) AS nb_extra_previous, 
+AVG(nb_exp_total) AS nb_exp, 
+AVG(nb_exp_cuisine) AS nb_exp_cuisine, 
+AVG(nb_exp_service) AS nb_exp_service, 
+AVG(nb_exp_notnull) AS nb_exp_notnull, 
+AVG(is_current_job) AS current_job, 
+AVG(is_current_job_cuisine) AS current_job_cuisine, 
+AVG(is_current_job_service) AS current_job_service, 
+AVG(duration) AS dur_exp, 
+AVG(duration_cuisine) AS dur_exp_cuisine,
+AVG(duration_service) AS dur_exp_service
+FROM (SELECT 
+	m.*, 
+	r.extra_id, 
+	(1) AS notified, 
+	(CASE WHEN r.status = 'extra_accepte' THEN 1 ELSE 0 END) AS applied, 
+	(0) AS hired
+FROM (SELECT 
+	id_mission, 
+	created_at
+	FROM extracadabra_pp.mission) m 
+INNER JOIN (SELECT
+	mission_id, 
+	demande_id
+	FROM extracadabra_pp.lien_mission_besoin_demande) lmbd  
+ON m.id_mission = lmbd.mission_id 
+INNER JOIN (SELECT
+    id_demande,
+    extra_id, 
+    status
+    FROM extracadabra_pp.demandes) d
+ON lmbd.demande_id = d.id_demande
+INNER JOIN (SELECT 
+	demande_id, 
+	extra_id, 
+	status
+FROM extracadabra_pp.reponses) r
+ON d.id_demande = r.demande_id
+WHERE m.created_at BETWEEN '2022-09-01 09:30:00' AND '2022-09-01 10:00:00'
+UNION
+SELECT 
+	m.*, 
+	b.extra_id, 
+	(1) AS notified, 
+	(1) AS applied,
+	(1) AS hired
+FROM (SELECT 
+	id_mission, 
+	created_at
+	FROM extracadabra_pp.mission) m 
+INNER JOIN (SELECT
+	mission_id, 
+	extra_id
+	FROM extracadabra_pp.besoin 
+	WHERE status = 'booked') b
+ON m.id_mission = b.mission_id
+WHERE m.created_at BETWEEN '2022-09-01 09:30:00' AND '2022-09-01 10:00:00'
+ORDER BY id_mission, notified, applied, hired) extr
+INNER JOIN (SELECT
+                id_extra,
+                genre
+            FROM extracadabra_pp.extras) ind
+    ON extr.extra_id = ind.id_extra
+INNER JOIN (SELECT
+	cel2.extra_id,
+AVG(
+    CASE
+        WHEN cel2.title LIKE '%turisme%' OR cel2.title LIKE '%restaurant%' OR cel2.title LIKE '%café%' OR cel2.title LIKE '%brasserie%' OR cel2.title LIKE '%boulanger%'
+             OR cel2.title LIKE '%hôtel%' OR cel2.title LIKE '%Chef de rang%' OR cel2.title LIKE '%evenementiel%' OR cel2.title LIKE '%pâtissier%'
+             OR cel2.title LIKE '%pâtisserie%' OR cel2.title LIKE '%bartender%' OR cel2.title LIKE '%barman%' OR cel2.title LIKE '%restauratiom%'
+             OR cel2.title LIKE '%cusinier%' OR cel2.title LIKE '%cousinier%' OR cel2.title LIKE '%cousine%' OR cel2.title LIKE '%cuisine%'
+             OR cel2.title LIKE '%hôtelier%' OR cel2.school LIKE '%hôtelier%' OR cel2.title LIKE '%hôtelière%' OR cel2.title LIKE '%arts de la table%'
+             OR cel2.title LIKE '%culinaire%'
+        THEN cel2.duration_id
+        ELSE NULL  
+    END
+) AS dur_related_studies,
+	MAX(CASE
+	        WHEN cel2.title like '%turisme%' or cel2.title LIKE '%restaurant%' or cel2.title LIKE '%café%' or cel2.title LIKE '%brasserie%' or cel2.title LIKE '%boulanger%' or cel2.title LIKE '%hôtel%' or cel2.title LIKE '%Chef de rang%' or
+	        cel2.title LIKE '%evenementiel%' or cel2.title LIKE '%pâtissier%'or cel2.title LIKE '%pâtisserie%'or cel2.title LIKE '%bartender%' OR cel2.title LIKE '%barman%' OR
+	        cel2.title LIKE '%restauratiom%'OR cel2.title LIKE '%cusinier%' OR cel2.title LIKE '%cousinier%' OR
+	        cel2.title LIKE '%cousine%' or cel2.title LIKE '%cuisine%' or cel2.title like '%hôtelier%' or cel2.school like '%hôtelier%' or cel2.title like '%hôtelière%' or cel2.title like '%arts de la table%' or cel2.title like '%culinaire%' THEN 1
+	        ELSE 0
+	    END) AS related_studies,
+	MAX(CASE
+	        WHEN cel2.school like '%Alain Ducasse%' or cel2.school like '%Tunon%' or cel2.school like '%ECOFIH%' or cel2.school like '%European bartender school%' or cel2.school like '%Excelia Group%' or
+	        cel2.school like '%Vatel Paris%' or cel2.school like '%Institut Paul Bocuse%' or cel2.school like '%le Cordon Bleu%' or cel2.school like '%Ferrandi%' or cel2.school like '%CHM%' or
+	        cel2.school like '%Jean Drouant%' or cel2.school like '%Guillame Tirel%' then 1
+	        ELSE 0
+	     END) AS grandecole_cuisine
+	FROM extracadabra_pp.candidate_education_line cel2
+	GROUP BY cel2.extra_id) schooldata
+	ON extr.extra_id = schooldata.extra_id    
+INNER JOIN (SELECT
+	cel.extra_id,
+	cel.start_date,
+    cel.end_date,
+    MAX(CASE WHEN cel.is_current_job = 1 THEN 1 ELSE 0 END) AS is_current_job,
+    MAX(CASE WHEN q.famille_id = '2' AND cel.is_current_job = 1 THEN 1 ELSE 0 END) AS is_current_job_service,  
+    MAX(CASE WHEN q.famille_id = '3' AND cel.is_current_job = 1 THEN 1 ELSE 0 END) AS is_current_job_cuisine,
+    AVG(DATEDIFF(cel.end_date, cel.start_date)) AS duration,   -- The duration is expressed in days
+    AVG(CASE WHEN q.famille_id = '2' THEN DATEDIFF(cel.end_date, cel.start_date) ELSE NULL END) AS duration_service,  
+    AVG(CASE WHEN q.famille_id = '3' THEN DATEDIFF(cel.end_date, cel.start_date) ELSE NULL END) AS duration_cuisine,  
+	SUM(CASE WHEN q.famille_id  = '2' THEN 1 ELSE 0 END) AS nb_exp_service,
+	SUM(CASE WHEN q.famille_id  = '3' THEN 1 ELSE 0 END) AS nb_exp_cuisine,
+	SUM(CASE WHEN cel.contract like '%cdi%'THEN 1 ELSE 0 END) AS nb_cdi_previous,
+    SUM(CASE WHEN cel.contract like '%cdd%'THEN 1 ELSE 0 END) AS nb_cdd_previous,
+    SUM(CASE WHEN cel.contract like '%extra%'THEN 1 ELSE 0 END) AS nb_extra_previous,
+    SUM(CASE WHEN q.famille_id = '2' AND cel.contract like '%cdi%' THEN 1 ELSE 0 END) AS nb_cdi_previous_service,  
+    SUM(CASE WHEN q.famille_id = '2' AND cel.contract like '%cdd%' THEN 1 ELSE 0 END) AS nb_cdd_previous_service,  
+    SUM(CASE WHEN q.famille_id = '2' AND cel.contract like '%extra%' THEN 1 ELSE 0 END) AS nb_extra_previous_service,  
+    SUM(CASE WHEN q.famille_id = '3' AND cel.contract like '%cdi%' THEN 1 ELSE 0 END) AS nb_cdi_previous_cuisine,   
+    SUM(CASE WHEN q.famille_id = '3' AND cel.contract like '%cdd%' THEN 1 ELSE 0 END) AS nb_cdd_previous_cuisine,   
+    SUM(CASE WHEN q.famille_id = '3' AND cel.contract like '%extra%' THEN 1 ELSE 0 END) AS nb_extra_previous_cuisine,
+    COUNT(cel.extra_id) AS nb_exp_total,
+	COUNT(cel.end_date) AS nb_exp_notnull
+	FROM extracadabra_pp.candidate_experience_line cel
+	LEFT JOIN (
+	SELECT
+	id_qualification,
+	famille_id
+	FROM extracadabra_pp.qualifications) q
+	ON cel.qualification_id = q.id_qualification
+	GROUP BY cel.extra_id) expdata
+	ON extr.extra_id = expdata.extra_id 
+GROUP BY id_mission, notified, applied, hired
