@@ -1,0 +1,65 @@
+***************************************************************************************************************************************
+
+*Only individual fix effect
+
+* Restricted sample with meetings >= 20 min
+
+clear 
+*cd Q:\Arbeitsmarktökonomie\Data-Projekte\Meetings
+cd \\abra\current\crt_prj_cai3p\caseworkers\Data
+
+
+
+* global for meeting characteristics
+global treat = "day_of_week aggreg_hour dauer_cat art"
+
+* global for outcomes
+global outcome = "inc6 inc12 emp6" //share1 emp6 emp12 alv6 zv6 amm6 emp12 alv12 zv12 amm12 emp18 alv18 zv18 amm18 emp24 alv24 zv24 amm24
+ 
+
+* global for control variables
+global controls1 = "ui0 zv0 amm0 sanc0 frau alter any2 any3 any4 any5 mobil kinderzulage iv ausbildungszulage verdienst tenure" // dummies and continuous variables
+global controls2 = "ausbild alter_cat code_funktion_n language_skills nation type zivil pensum anspruch anzahl" // categorical variables
+global controls3 = "din1_60 anz1_60 des1_60 anz4_60 des4_60 fes0_24 any0_24 any2_24 any3_24 any4_24 fes4_24" // other characteristics job seeker employment history
+global controls4 = "curcases dauer2 mdauer2 experience allcases avcases exp_cat" // caseworkers characteristics
+
+* global for additional FE
+global fe = "wzw_cat beruf_cat kanton_n"
+
+* run regressions in loop
+
+forval m = 0/5 {
+
+use unspell begalo dummy_begalo ahv_nr von_begalo t7_berater dummy_caseworker $outcome $treat $controls1 $controls2 $controls3 $controls4 $fe t7_durchfuehrer monat share1  if von_begalo==`m' & dauer_cat>=20 & dauer_cat<=120 & dummy_begalo==1  using "\\abra\current\crt_prj_cai3p\caseworkers\Data\\data_characteristics_caseworkers&jobseeker.dta", clear
+tab type, gen(type) 
+
+
+drop if unspell<2
+
+
+recast int aggreg_hour day_of_week
+fvset base 2 aggreg_hour
+fvset base 2 day_of_week
+fvset base 1 type
+fvset base 1 art
+fvset base 30 dauer_cat
+
+global treat = "day_of_week aggreg_hour dauer_cat art"
+
+foreach outvar of global outcome {
+            reghdfe `outvar' dummy_caseworker share1 i.($treat) $controls1 ib(freq).($controls2) $controls3 $controls4, absorb(monat $fe t7_berater) vce(robust)
+			*outreg2 using Results\results_`outvar'_`m', excel append ctitle(+ Caseworker FE)
+			outreg2 using "\\abra\current\crt_prj_cai3p\caseworkers\results_`outvar'", excel append ctitle(_`m'+ No_ifixed_ effect)
+			reghdfe `outvar' i.($treat), absorb(ahv_nr) vce(robust)
+			*outreg2 using Results\results_`outvar'_`m', excel replace ctitle(Raw)
+			outreg2 using "\\abra\current\crt_prj_cai3p\caseworkers\results_`outvar'", excel append ctitle(_`m'Raw + FE)
+	         reghdfe `outvar' i.($treat), absorb(monat ahv_nr) vce(robust)
+			*outreg2 using Results\results_`outvar'_`m', excel append ctitle(+ Month FE)
+			outreg2 using "\\abra\current\crt_prj_cai3p\caseworkers\results_`outvar'", excel append ctitle(_`m'+Month FE)
+			           reghdfe `outvar' dummy_caseworker share1 i.($treat) $controls1 ib(freq).($controls2) $controls3 $controls4, absorb(ahv_nr monat $fe t7_berater) vce(robust)
+			*outreg2 using Results\results_`outvar'_`m', excel append ctitle(+ Caseworker FE)
+			outreg2 using "\\abra\current\crt_prj_cai3p\caseworkers\results_`outvar'", excel append ctitle(_`m'+ All)
+			
+			
+}
+}
