@@ -1,0 +1,310 @@
+clear
+
+*cd \\abra\current\crt_prj_cai3p\caseworkers\
+use "Q:\Arbeitsmarktökonomie\Data-Projekte\Meetings\Data\meetings.dta"
+
+*In this script we clean the data concerning meetings and create the new datadet meetings_neu. 
+*This cleaning concerns the estimation of the duration of meetings, plausible meetings and the month of unemployment.
+*This dataset does not present any characteristics of unemployed people or caseworkers.
+*Creates the new dataset meetings_neu
+
+
+*log using Results\results_20220129.log, replace
+
+*use "Data\meetings.dta", clear
+
+gen scalar1=0 /*Descriptive statistics on meetings' duration*/
+gen scalar2=0 /*Descriptive statistics on plausible and implausible meeting*/
+
+*Drop no entry meetings data"
+by ahv_nr: generate n1=_n
+count if n1==1 & nomeet==1
+gen no_meet1=1 if n1==1 & nomeet==1
+egen nbad = total(no_meet1==1), by(ahv_nr)
+drop if nbad
+
+*generate grouped duration
+egen grouped= cut(dauer), at(1, 5, 183) 
+replace grouped=round(dauer, 5) if grouped==5
+replace grouped=999 if grouped>=183
+replace grouped=0 if dauer==0
+lab var grouped "Meeting duration grouped"
+
+*generate dummy for plausible meetings
+gen von_hour = hhC(von)
+gen von_min= mmC(von)
+
+generate dummy_plausible=0
+replace dummy_plausible=1 if von_hour>=7
+replace dummy_plausible=0 if von_hour>=19
+lab var dummy_plausible "Plausible meeting"
+
+*Define the meetings before the beginning of unemployment and the other months
+gen von_month = mofd(dofc(von))
+format von_month %tm
+gen dummy_before=0
+replace dummy_before=1 if von_month<begalo
+gen von_begalo= von_month - begalo
+lab var dummy_before "Meetings before unemployment registration"
+
+
+
+
+
+if scalar1==1 {
+tab grouped
+*Descriptive stats table
+*grouped duration X plausible meeting time dummy
+display "Stats for total sample"
+tab grouped dummy_plausible, row
+*grouped duration X status
+tab grouped status,row
+*grouped duration X art
+tab grouped art,row
+*plausible meetings time dummy X status
+tab status dummy_plausible, row
+*plausible meetings time dummy X art
+tab art dummy_plausible, row
+}
+
+
+gen von_begalo2 = von_begalo
+replace von_begalo2 = -1 if von_begalo<0
+gen tookplace = status==2 & dummy_plausible==1
+bysort ahv_nr begalo von_begalo2 (von_begalo): egen anzmeet = sum(tookplace)
+bysort ahv_nr begalo von_begalo2 (von_begalo): gen first = _n
+lab var anzmeet "Number of plausible meetings that took place"
+lab var tookplace "meeting is plausible and took place"
+
+
+
+
+if scalar2==1 {
+forval i = -1/3 {
+preserve
+keep if von_begalo2==`i'
+display "   "
+display "Month of unemployment " `i'
+display "   "
+display "Number of plausible meetings that took place"
+tab anzmeet if first==1
+tab dummy_plausible 
+tab grouped 
+tab grouped status, row 
+tab grouped art, row
+tab grouped dummy_plausible, row
+tab status
+tab status dummy_plausible, row
+tab art 
+tab art dummy_plausible, row 
+display "   "
+display "Only plausible meetings that took place"
+tab grouped if tookplace==1
+tab art if tookplace==1
+restore
+}
+}
+
+
+save "Q:\Arbeitsmarktökonomie\Data-Projekte\Meetings\Data\meetings_neu.dta", replace
+log close
+
+*clear
+*This cleaning code concerns the outcome variables
+* This script merge outcomes (part 1 and 2) with the dataset concerning meetings information(duration/unemployment month/the meeting is plausible).
+*Here we drop all the meetings that are not plausible and did not take place
+* WE create the new dataset meetings_outcome_characteristics.dta
+
+
+*********************************************************************************
+
+*use "Q:\Arbeitsmarktökonomie\Data-Projekte\Meetings\Data\Outcomes_AHV.dta", clear 
+
+*merge 1:m ahv_nr von_month begalo using "Q:\Arbeitsmarktökonomie\Data-Projekte\Meetings\Data\meetings_neu.dta", nogen
+
+*merge m:1 ahv_nr begalo using "Q:\Arbeitsmarktökonomie\Data-Projekte\Meetings\Data\data_without_treatments_and_outcomes.dta", nogen
+*keep if von_begalo!=. & von_begalo>=0 & von_begalo<=17
+
+*&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&
+clear 
+use "\\abra\current\crt_prj_cai3p\caseworkers\Data\Outcomes_AHV.dta", clear
+
+merge 1:m ahv_nr von_month begalo using "\\abra\current\crt_prj_cai3p\caseworkers\Data\meetings_neu.dta", nogen
+
+merge m:1 ahv_nr begalo using "\\abra\current\crt_prj_cai3p\caseworkers\Data\data_without_treatments_and_outcomes.dta", nogen
+keep if von_begalo!=. & von_begalo>=0 & von_begalo<=17
+
+*Define dummy for having the same caseworker
+gen dummy_caseworker=0
+replace dummy_caseworker=1 if t7_berater == t7_durchfuehrer
+
+*%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% LANGUAGE %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+*Create variable for language skills 
+drop kanton_n
+encode kanton_str, generate(kanton_n)
+gen kanton_ita=0
+replace kanton_ita=1 if kanton_n==21
+gen kanton_french=0
+replace kanton_french=1 if inlist(kanton_n, 8, 11, 13, 23)
+gen kanton_fre_german=0
+replace kanton_fre_german=1 if inlist(kanton_n, 4, 7, 24)
+gen kanton_german=0
+replace kanton_german=1 if kanton_fre_german==0 & kanton_french==0 & kanton_ita==0
+gen language_skills = italo if kanton_ita==1
+replace language_skills = franz if kanton_french==1
+replace language_skills = deutsch if kanton_german==1
+replace language_skills = franz if kanton_fre_german==1 & franz==1
+replace language_skills = deutsch if kanton_fre_german==1 & deutsch==1
+replace language_skills = deutsch if kanton_fre_german==1 & franz==2 & deutsch!=1
+replace language_skills = deutsch if kanton_fre_german==1 & deutsch==2 & franz!=1
+replace language_skills = deutsch if missing(language_skills)
+label define language_skills 1 "Mindestens gut" 
+label define language_skills 2 "Weniger als gut", add
+label define language_skills 3 "Keine Kenntnisse", add
+label values language_skills language_skills
+
+
+*Create variable for kantons' language
+gen regional_language=1 if kanton_ita==1
+replace regional_language=2 if kanton_french==1
+replace regional_language=3 if kanton_fre_german==1
+replace regional_language=4 if kanton_german==1
+label define regional_language 1 "italian" 
+label define regional_language 2 "french", add
+label define regional_language 3 "bilingual", add
+label define regional_language 4 "german", add
+label values regional_language regional_language
+tab regional_language language_skills
+
+*Generate aggregated version of language region 
+gen lregion_new=1 if regional_language==3 | kanton_n==4
+replace lregion_new=0 if missing(lregion_new)
+
+*Generate aggregate version of language skills
+gen language_new = 1 if language_skills==1
+replace language_new=0 if missing(language_new)
+
+
+gen english_new = 1 if englisch==1
+replace english_new=0 if missing(english_new)
+
+
+
+
+
+
+*%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+*Generate day of the week
+*0 stays for sunday, 1 monday etc
+gen day_of_week = dow(dofc(von))
+
+label define day_of_week 0 "Sunday" 
+label define day_of_week 1 "Monday", add
+label define day_of_week 2 "Tuesday", add
+label define day_of_week 3 "Wednesday", add
+label define day_of_week 4 "Thursday", add
+label define day_of_week 5 "Friday", add
+label define day_of_week 6 "Saturday", add
+label values day_of_week day_of_week
+
+*Generate shared in board duration group
+egen board_duration= cut(grouped), at(0, 1, 5, 10, 15, 30, 45, 60, 90, 1000) 
+
+*Redefine implausible meetings
+replace dummy_plausible=0 if day_of_week==0 | day_of_week==6 | dauer==999
+replace dummy_plausible=0 if dauer<0 | dauer>125
+drop if dummy_plausible==0 | tookplace==0
+
+*Define the total number of meetings
+sort ahv_nr begalo dummy_before 
+by ahv_nr begalo dummy_before : generate total_n_of_meetings=_N 
+replace total_n_of_meetings=0 if dummy_before==1
+lab var total_n_of_meetings "Total number of meetings that took place after the beginning of unemployment"
+*drop if dummy_before==1
+
+*Define the number of meetings that have really taken place
+sort ahv_nr begalo dummy_before spell
+by ahv_nr begalo dummy_before: generate spell_took_place=_n
+replace spell_took_place=0 if dummy_before==1
+lab var spell_took_place "Number of meetings that took place after the beginning of unemployment"
+
+*Define month since first meeting
+by ahv_nr begalo: gen month_1st_meeting=von_month if spell_took_place==1
+replace month_1st_meeting=month_1st_meeting[_n-1] if missing(month_1st_meeting)
+sort ahv_nr begalo
+by ahv_nr begalo: gen month_since_first_meeting= von_month - month_1st_meeting
+
+*Define day/ month/ year and aggregate weeks of the meetings
+gen meeting_day = day(dofc(von))
+gen meetingt_month=month(dofc(von))
+gen meetingt_year=year(dofc(von))
+gen week_of_month=1 if meeting_day<=7
+replace week_of_month=2 if meeting_day>7 & meeting_day<=14
+replace week_of_month=3 if meeting_day>14 & meeting_day<=21
+replace week_of_month=4 if meeting_day>21 & meeting_day<=28
+replace week_of_month=5 if meeting_day>28
+keep if meetingt_year>=2003 & meetingt_year<=2015 
+
+*Generate aggregate version of nation
+gen nation_new=1 if nation==1
+replace nation_new=2 if nation==2 | nation==3 | nation==4
+replace nation_new=3 if nation==5
+replace nation_new=4 if nation==6
+replace nation_new=5 if missing(nation_new)
+
+*Generate aggregated version of ausbild (ausbild_new) / EDUCATION LEVEL
+
+gen ausbild_new=4 if ausbild==6 | ausbild==5 | ausbild==7
+replace ausbild_new=3 if ausbild==3 | ausbild==4
+replace ausbild_new=2 if ausbild==2 | ausbild==0
+replace ausbild_new=1 if ausbild==1
+
+recode oth* (.=1)
+forval i=6(6)36 {
+replace coth`i' = `i' if coth`i'==.
+}
+recode *emp* *alv* *ben* *inc* (.=0)
+
+drop *30 *36
+
+fvset base 10 von_hour
+fvset base 2 day_of_week
+
+*Label variables
+label variable von_hour "hour of the meeting"
+label variable von_min  "minutes of the meeting" 
+label variable dummy_caseworker "the meeting is supervised by the assigned caseworker"
+label variable kanton_ita "kanton speaking italian"
+label variable kanton_french "kanton speaking french"
+label variable kanton_fre_german "kanton biligual"
+label variable kanton_german "kanton speaking german"
+label variable language_skills "language skills level"
+label variable regional_language "language of the region"
+label variable lregion_new "aggregated version of language region"
+label variable language_new "aggregated version of language skills"
+label variable english_new "aggregated version of language skills"
+label variable day_of_week "day of the week where the meeting took place"
+label variable board_duration "aggregated version of duration of the meeting"
+label variable month_1st_meeting "month of the first meeting"
+label variable month_since_first_meeting "month since first meeting"
+label variable meeting_day "day of the month where the meeting took place"
+label variable meetingt_month "month where the meeting took place"
+label variable meetingt_year "year where the meeting took place" 
+label variable week_of_month "week of the month where the meeting took place"
+label variable nation_new "aggregated version of nation"
+label variable ausbild_new "education level aggregate version"
+label variable von_begalo "number of meetings after the beginning of unemployment"
+label variable von_begalo2 " aggregated number of meetings after the beginning of unemployment"
+label variable first "meeting during the first month"
+
+ 
+   
+
+save "\\abra\current\crt_prj_cai3p\caseworkers\Data\\meetings_outcome_characteristics.dta", replace
+
+*save "Q:\Arbeitsmarktökonomie\Data-Projekte\Meetings\Data\meetings_outcome_characteristics.dta", replace 
+
+gen obs = 1
+gcollapse (sum) obs, by(t7_durchfuehrer)
+save Data\caseworker.dta, replace
+
